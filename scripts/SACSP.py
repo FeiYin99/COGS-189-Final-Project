@@ -11,129 +11,164 @@ import classification_utils as utils
 
 
 
-def CSP(c1_data, c2_data, n_top=3, n_bot=3):
+def cost_function(data_fourier, h_or_l, w_or_v, avg_cov_sum):
+    ## Equation 4 and 5 in paper
     
-    num_c1_trials = c1_data.shape[0]
-    num_c2_trials = c2_data.shape[0]
-    num_channels = c1_data.shape[1]
+    numerator = (w_or_v.T @ data_fourier @ np.diag(h_or_l) @ np.matrix(data_fourier).H @ w_or_v)[0, 0]
+    denominator = (w_or_v.T @ avg_cov_sum @ w_or_v)[0, 0]
     
-    ## Calculate normalized spatial covariance of each trial
-    c1_trial_covs = np.zeros((num_c1_trials, num_channels, num_channels))
-    c2_trial_covs = np.zeros((num_c2_trials, num_channels, num_channels))
-    
-    for i in range(num_c1_trials):
-        c1_trial = c1_data[i]
-        c1_trial_prod = c1_trial @ c1_trial.T
-        c1_trial_cov = c1_trial_prod / np.trace(c1_trial_prod)
-        c1_trial_covs[i] = c1_trial_cov
-    
-    for i in range(num_c2_trials):
-        c2_trial = c2_data[i]
-        c2_trial_prod = c2_trial @ c2_trial.T
-        c2_trial_cov = c2_trial_prod / np.trace(c2_trial_prod)
-        c2_trial_covs[i] = c2_trial_cov
-    
-    
-    ## Calculate averaged normalized spatial covariance
-    c1_trial_covs_avg = np.mean(c1_trial_covs, axis=0)
-    c2_trial_covs_avg = np.mean(c2_trial_covs, axis=0)
-    
-    ## Calculate composite spatial covariance
-    R12 = c1_trial_covs_avg + c2_trial_covs_avg
-    
-    ## Eigen-decompose composite spatial covariance
-    R12_eigval, R12_eigvec = np.linalg.eig(R12)
-    
-    ## Create diagonal matrix of eigenvalues        
-    R12_eigval_diag = np.diag(R12_eigval)
-    
-    ## Calculate Whitening transformation matrix
-    P12 = np.linalg.inv(np.sqrt(R12_eigval_diag)) @ R12_eigvec.T
-    
-    ## Whitening Transform average covariance
-    S12_1 = P12 @ c1_trial_covs_avg @ P12.T
-    S12_2 = P12 @ c2_trial_covs_avg @ P12.T
-    
-    ## Eigen-decompose whitening transformed average covariance
-    S12_1_eigval, S12_1_eigvec = np.linalg.eig(S12_1)
-    S12_2_eigval, S12_2_eigvec = np.linalg.eig(S12_2)
-    
-    #print(S12_1_eigval + S12_2_eigval)
-    
-    ## Take the top and bottom eigenvectors to contruct projection matrix W
-    sort_indices = np.argsort(S12_1_eigval)
-    top_n_indices = list(sort_indices[-n_top:])
-    bot_n_indices = list(sort_indices[:n_bot])
-    S12_1_eigvec_extracted = S12_1_eigvec[:, top_n_indices + bot_n_indices]
-    W12 = S12_1_eigvec_extracted.T @ P12
-    
-    return W12
+    return numerator / denominator
 
 
-def CSP2(c1_data, c2_data, n_top=3, n_bot=3):
+def update_spatial_filters(data_fourier, h_or_l, avg_cov_sum, top_n):
+	## Equation 6 and 7 in paper
 
-    num_c1_trials = c1_data.shape[0]
-    num_c2_trials = c2_data.shape[0]
-    num_channels = c1_data.shape[1]
-
-    ## Calculate normalized spatial covariance of each trial
-    c1_trial_covs = np.zeros((num_c1_trials, num_channels, num_channels))
-    c2_trial_covs = np.zeros((num_c2_trials, num_channels, num_channels))
+    E = data_fourier @ np.diag(h_or_l) @ np.matrix(data_fourier).H
     
-    for i in range(num_c1_trials):
-        c1_trial = c1_data[i]
-        c1_trial_prod = c1_trial @ c1_trial.T
-        c1_trial_cov = c1_trial_prod / np.trace(c1_trial_prod)
-        c1_trial_covs[i] = c1_trial_cov
+    ## Generalized eigen-decomposition of Eq6 and Eq7 along with sum of class' spatial covariances
+    eigval, eigvec = sp.linalg.eigh(E, avg_cov_sum)
     
-    for i in range(num_c2_trials):
-        c2_trial = c2_data[i]
-        c2_trial_prod = c2_trial @ c2_trial.T
-        c2_trial_cov = c2_trial_prod / np.trace(c2_trial_prod)
-        c2_trial_covs[i] = c2_trial_cov
-    
-    
-    ## Calculate averaged normalized spatial covariance
-    c1_trial_covs_avg = np.mean(c1_trial_covs, axis=0)
-    c2_trial_covs_avg = np.mean(c2_trial_covs, axis=0)
-
-    avg_cov_sum = c1_trial_covs_avg + c2_trial_covs_avg
-    eigval, eigvec = sp.linalg.eigh(c1_trial_covs_avg, avg_cov_sum)
-
-    ## Take the top and bottom eigenvectors to contruct projection matrix W
+    ## Extract top n eigen vectors
     sort_indices = np.argsort(eigval)
-    top_n_indices = list(sort_indices[-n_top:])
-    bot_n_indices = list(sort_indices[:n_bot])
-    eigvec_extracted = eigvec[:, top_n_indices + bot_n_indices]
-    W = eigvec_extracted.T
-
-    return W
-
-
-def apply_CSP(W, data):
-    num_epochs = data.shape[0]
-    num_channels = data.shape[1]
-    num_channels_transformed = W.shape[0]
-    num_samples = data.shape[2]
+    top_n_indices = list(sort_indices[-top_n:])
+    top_n_eigvec = eigvec[:, top_n_indices]
     
-    data_transformed = np.zeros((num_epochs, num_channels_transformed, num_samples))
+    return top_n_eigvec
+
+
+def SACSP(c1_data, c2_data, R=3, M=1, e=1e-6):
     
-    for i, epoch in enumerate(data):
-        epoch_transformed = W @ epoch
-        data_transformed[i, :, :] = epoch_transformed
+    ## R = number of spectral/spatial filters for each class
+    ## M = number of initializations of spectral filters
     
-    return data_transformed
+    t = c1_data.shape[-1]  ## Number of time samples
+    #F = sp.linalg.dft(t)  ## Fourier matrix with shape t x t
+    
+    H = np.ones((M, t))  ## Initialize M number of h vectors
+    L = np.ones((M, t))  ## Initialize M number of l vectors
+ 
+    c1_data_avg = np.mean(c1_data, axis=0)
+    c2_data_avg = np.mean(c2_data, axis=0)
+
+    c1_data_avg_cov = np.cov(c1_data_avg)
+    c2_data_avg_cov = np.cov(c2_data_avg)
+    avg_cov_sum = c1_data_avg_cov + c2_data_avg_cov
+    
+    c1_data_avg_fourier = np.fft.fft(c1_data_avg)
+    c2_data_avg_fourier = np.fft.fft(c2_data_avg)
+    
+    c1_filter_pairs = []
+    c2_filter_pairs = []
+    
+    for m in range(M):
+        
+        ## h and l are spectral filters
+        h = H[m, :]
+        l = L[m, :]
+        
+        ## w and v are spatial filters
+        W = update_spatial_filters(c1_data_avg_fourier, h, avg_cov_sum, top_n=R)
+        V = update_spatial_filters(c2_data_avg_fourier, l, avg_cov_sum, top_n=R)
+        
+        for r in range(R):  
+            
+            ### Class 1 optimization ###
+            
+            w = np.atleast_2d(W[:, r]).T  ## From W, get w as a column vector
+            
+            c1_cost = 0
+            c1_cost_increase = e + 1
+            
+            while c1_cost_increase > e:
+            
+                ## Update spectral filter h_r_m from Eq9    
+                E = np.matrix(c1_data_avg_fourier).H @ w @ w.T @ c1_data_avg_fourier
+                
+                for k in range(t):
+                    h[k] = E[k, k] / np.linalg.norm(np.diag(E))
+                
+                H[m, :] = h
+                
+                ## Update spatial filter w_r by selecting the eigenvector 
+                ##   corresponding to the largest eigenvalue from Eq6
+                w = update_spatial_filters(c1_data_avg_fourier, h, avg_cov_sum, top_n=1)
+                W[:, r] = w.flatten()
+
+                ## Calculate cost
+                c1_cost_prev = c1_cost
+                c1_cost = cost_function(c1_data_avg_fourier, h, w, avg_cov_sum)
+                c1_cost_increase = c1_cost - c1_cost_prev
+   
+            c1_filter_pairs.append([h, w])
+            
+            
+            ### Class 2 optimization ###
+            
+            v = np.atleast_2d(V[:, r]).T  ## From V, get v as a column vector
+            
+            c2_cost = 0
+            c2_cost_increase = e + 1
+            
+            while c2_cost_increase > e:
+            
+                ## Update spectral filter l_r_m from Eq10    
+                E = np.matrix(c2_data_avg_fourier).H @ v @ v.T @ c2_data_avg_fourier
+                
+                for k in range(t):
+                    l[k] = E[k, k] / np.linalg.norm(np.diag(E))
+                
+                L[m, :] = l
+                
+                ## Update spatial filter v_r by selecting the eigenvector 
+                ##   corresponding to the largest eigenvalue from Eq7
+                v = update_spatial_filters(c2_data_avg_fourier, l, avg_cov_sum, top_n=1)
+                V[:, r] = v.flatten()
+
+                ## Calculate cost
+                c2_cost_prev = c2_cost
+                c2_cost = cost_function(c2_data_avg_fourier, l, v, avg_cov_sum)
+                c2_cost_increase = c2_cost - c2_cost_prev
+
+            c2_filter_pairs.append([l, v])
+    
+    ## From the M x R pairs of spatial and spectral filters, select R pairs that maximize the cost function
+
+    ## Not implemented since choosing M = 1
+    
+    return c1_filter_pairs, c2_filter_pairs
+
+
+def SACSP_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
+    
+    t = all_data.shape[-1]  ## Number of time samples
+    F = sp.linalg.dft(t)  ## Fourier matrix with shape t x t
+    
+    extracted_features = np.zeros((all_data.shape[0], 2 * R))
+    
+    for i, epoch in enumerate(all_data):    
+        epoch_fourier = epoch @ F
+        
+        for j, filter_pair in enumerate(c1_filter_pairs + c2_filter_pairs):
+            spectral_filter = filter_pair[0]  
+            spatial_filter = filter_pair[1]
+            extracted_feature = np.log(spatial_filter.T @ 
+                                       epoch_fourier @ 
+                                       np.diag(spectral_filter) @ 
+                                       np.matrix(epoch_fourier).H @ 
+                                       spatial_filter)
+            
+            extracted_features[i, j] = extracted_feature[0, 0]
+            
+    return extracted_features
 
 
 
-class CSP_LDA_classifier:
+class SACSP_LDA_classifier:
     
-    def __init__(self, X_train, y_train, cross_val=None, num_samples=10):
+    def __init__(self, X_train, y_train, cross_val=None):
         self.X_train = X_train
         self.y_train = y_train
         self.cross_val = cross_val
-        self.num_samples = num_samples
-        
 
     def train_binary(self):
         
@@ -149,22 +184,15 @@ class CSP_LDA_classifier:
         labels_c1 = self.y_train[self.y_train == unique_labels[0]]
         labels_c2 = self.y_train[self.y_train == unique_labels[1]]
             
-        ## Apply CSP to transform data
-        #self.CSP_transform = CSP(data_c1, data_c2)
-        self.CSP_transform = CSP2(data_c1, data_c2)
-        data_transformed = apply_CSP(self.CSP_transform, self.X_train)
-
-        ## Downsample with windowed means
-        data_transformed = utils.windowed_means(data_transformed, self.num_samples)
-        
-        ## Flatten data
-        data_transformed = utils.flatten_dim12(data_transformed)
+        ## Apply SACSP to transform data
+        self.c1_filter_pairs, self.c2_filter_pairs = SACSP(data_c1, data_c2)
+        extracted_features = SACSP_extract_features(self.X_train, self.c1_filter_pairs, self.c2_filter_pairs)
         
         self.classifier = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
-        self.classifier.fit(data_transformed, self.y_train)
+        self.classifier.fit(extracted_features, self.y_train)
         
         if self.cross_val is not None:
-            cross_val_score_avg = np.mean(cross_val_score(self.classifier, data_transformed, self.y_train, cv=self.cross_val))
+            cross_val_score_avg = np.mean(cross_val_score(self.classifier, extracted_features, self.y_train, cv=self.cross_val))
 
             print('Cross validation score average: ', cross_val_score_avg)            
             return cross_val_score_avg
@@ -177,10 +205,7 @@ class CSP_LDA_classifier:
 
         if X_test is not None and y_test is not None:
 
-            X_test_ = apply_CSP(self.CSP_transform, X_test)
-            X_test_ = utils.windowed_means(X_test_, self.num_samples)
-            X_test_ = utils.flatten_dim12(X_test_)
-
+            X_test_ = SACSP_extract_features(X_test, self.c1_filter_pairs, self.c2_filter_pairs)
             predictions = self.classifier.predict(X_test_)
             accuracy = accuracy_score(y_test, predictions)
 
@@ -189,17 +214,14 @@ class CSP_LDA_classifier:
             
         else:
 
-            X_train_ = apply_CSP(self.CSP_transform, self.X_train)
-            X_train_ = utils.windowed_means(X_train_, self.num_samples)
-            X_train_ = utils.flatten_dim12(X_train_)
-
+            X_train_ = SACSP_extract_features(self.X_train, self.c1_filter_pairs, self.c2_filter_pairs)
             predictions = self.classifier.predict(X_train_)
             accuracy = accuracy_score(self.y_train, predictions)
 
             print('Training accuracy: ', accuracy)
             return predictions, accuracy
-        
 
+    """
     def train_1_vs_1(self):
 
         ## Separate data by labels
@@ -299,3 +321,4 @@ class CSP_LDA_classifier:
             
             print('Training accuracy: ', accuracy)
             return final_predictions, accuracy
+    """
