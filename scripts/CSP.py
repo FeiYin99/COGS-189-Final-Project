@@ -11,7 +11,7 @@ import classification_utils as utils
 
 
 
-def CSP(c1_data, c2_data, n_top=3, n_bot=3):
+def CSP(c1_data, c2_data, n_top):
     
     num_c1_trials = c1_data.shape[0]
     num_c2_trials = c2_data.shape[0]
@@ -63,14 +63,14 @@ def CSP(c1_data, c2_data, n_top=3, n_bot=3):
     ## Take the top and bottom eigenvectors to contruct projection matrix W
     sort_indices = np.argsort(S12_1_eigval)
     top_n_indices = list(sort_indices[-n_top:])
-    bot_n_indices = list(sort_indices[:n_bot])
+    bot_n_indices = list(sort_indices[:n_top])
     S12_1_eigvec_extracted = S12_1_eigvec[:, top_n_indices + bot_n_indices]
     W12 = S12_1_eigvec_extracted.T @ P12
     
     return W12
 
 
-def CSP2(c1_data, c2_data, n_top=3, n_bot=3):
+def CSP2(c1_data, c2_data, n_top):
 
     num_c1_trials = c1_data.shape[0]
     num_c2_trials = c2_data.shape[0]
@@ -103,35 +103,61 @@ def CSP2(c1_data, c2_data, n_top=3, n_bot=3):
     ## Take the top and bottom eigenvectors to contruct projection matrix W
     sort_indices = np.argsort(eigval)
     top_n_indices = list(sort_indices[-n_top:])
-    bot_n_indices = list(sort_indices[:n_bot])
+    bot_n_indices = list(sort_indices[:n_top])
     eigvec_extracted = eigvec[:, top_n_indices + bot_n_indices]
     W = eigvec_extracted.T
 
     return W
 
 
-def apply_CSP(W, data):
-    num_epochs = data.shape[0]
-    num_channels = data.shape[1]
+def apply_CSP_transform(all_data, W):
+
+    num_epochs = all_data.shape[0]
+    num_channels = all_data.shape[1]
     num_channels_transformed = W.shape[0]
-    num_samples = data.shape[2]
+    num_samples = all_data.shape[2]
     
     data_transformed = np.zeros((num_epochs, num_channels_transformed, num_samples))
     
-    for i, epoch in enumerate(data):
+    for i, epoch in enumerate(all_data):
         epoch_transformed = W @ epoch
         data_transformed[i, :, :] = epoch_transformed
     
     return data_transformed
 
 
+def CSP_extract_features(all_data, W, n_top):
+
+    extracted_features = np.zeros((all_data.shape[0], 2 * n_top))
+
+    for i, epoch in enumerate(all_data):
+
+        Z = W @ epoch
+
+        #print(np.var(Z, axis=-1).shape)
+
+        var_sum = np.sum(np.var(Z, axis=-1))
+
+        for k in range(n_top):
+
+            Z_k = Z[k]
+            f_k = np.log10(np.var(Z_k) / var_sum)
+
+            extracted_features[i, k] = f_k
+
+    return extracted_features
+
+    
+
+
 class CSP_LDA_classifier:
     
-    def __init__(self, X_train, y_train, cross_val=None, num_samples=10):
+    def __init__(self, X_train, y_train, cross_val=None, n_top=3, random_state=42):
         self.X_train = X_train
         self.y_train = y_train
         self.cross_val = cross_val
-        self.num_samples = num_samples
+        self.n_top = n_top
+        self.random_state = random_state
         
 
     def train_binary(self):
@@ -149,25 +175,15 @@ class CSP_LDA_classifier:
         labels_c2 = self.y_train[self.y_train == unique_labels[1]]
             
         ## Apply CSP to transform data
-        #self.CSP_transform = CSP(data_c1, data_c2)
-        self.CSP_transform = CSP2(data_c1, data_c2)
-        data_transformed = apply_CSP(self.CSP_transform, self.X_train)
-
-        ## Downsample with windowed means
-        #data_transformed = utils.windowed_means(data_transformed, self.num_samples)
-        
-        ## Flatten data
-        #data_transformed = utils.flatten_dim12(data_transformed)
-
-        data_transformed = np.mean(data_transformed, axis=-1)
-
-
+        #self.CSP_transform = CSP(data_c1, data_c2, self.n_top)
+        self.CSP_transform = CSP2(data_c1, data_c2, self.n_top)
+        extracted_features = CSP_extract_features(self.X_train, self.CSP_transform, self.n_top)
         
         self.classifier = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
-        self.classifier.fit(data_transformed, self.y_train)
+        self.classifier.fit(extracted_features, self.y_train)
         
         if self.cross_val is not None:
-            cross_val_score_avg = np.mean(cross_val_score(self.classifier, data_transformed, self.y_train, cv=self.cross_val))
+            cross_val_score_avg = np.mean(cross_val_score(self.classifier, extracted_features, self.y_train, cv=self.cross_val))
 
             print('Cross validation score average: ', cross_val_score_avg)            
             return cross_val_score_avg
@@ -180,13 +196,7 @@ class CSP_LDA_classifier:
 
         if X_test is not None and y_test is not None:
 
-            X_test_ = apply_CSP(self.CSP_transform, X_test)
-
-            X_test_ = np.mean(X_test_, axis=-1)
-
-            #X_test_ = utils.windowed_means(X_test_, self.num_samples)
-            #X_test_ = utils.flatten_dim12(X_test_)
-
+            X_test_ = CSP_extract_features(X_test, self.CSP_transform, self.n_top)
             predictions = self.classifier.predict(X_test_)
             accuracy = accuracy_score(y_test, predictions)
 
@@ -195,13 +205,7 @@ class CSP_LDA_classifier:
             
         else:
 
-            X_train_ = apply_CSP(self.CSP_transform, self.X_train)
-
-            X_train_ = np.mean(X_train_, axis=-1)
-
-            #X_train_ = utils.windowed_means(X_train_, self.num_samples)
-            #X_train_ = utils.flatten_dim12(X_train_)
-
+            X_train_ = CSP_extract_features(self.X_train, self.CSP_transform, self.n_top)
             predictions = self.classifier.predict(X_train_)
             accuracy = accuracy_score(self.y_train, predictions)
 
@@ -231,25 +235,17 @@ class CSP_LDA_classifier:
                 labels_c2 = self.y_train[self.y_train == unique_labels[j]]
 
                 ## Apply CSP to transform data
-                CSP_transform = CSP2(data_c1, data_c2)
+                CSP_transform = CSP2(data_c1, data_c2, self.n_top)
                 self.CSP_transforms.append(CSP_transform)
-                data_c1 = apply_CSP(CSP_transform, data_c1)
-                data_c2 = apply_CSP(CSP_transform, data_c2)
+                data_c1 = CSP_extract_features(data_c1, CSP_transform, self.n_top)
+                data_c2 = CSP_extract_features(data_c2, CSP_transform, self.n_top)
         
                 ## Concatenate data and labels
                 data_concat = np.concatenate((data_c1, data_c2), axis=0)
                 labels_concat = np.concatenate((labels_c1, labels_c2), axis=0)
-
-                data_concat = np.mean(data_concat, axis=-1)
         
-                ## Downsample with windowed means
-                #data_concat = utils.windowed_means(data_concat, self.num_samples)
-                
-                ## Flatten data
-                #data_concat = utils.flatten_dim12(data_concat)
-                
                 ## Shuffle data
-                data_concat, labels_concat = shuffle(data_concat, labels_concat, random_state=42)
+                data_concat, labels_concat = shuffle(data_concat, labels_concat, random_state=self.random_state)
 
                 lda = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
                 lda.fit(data_concat, labels_concat)
@@ -276,12 +272,7 @@ class CSP_LDA_classifier:
             
             for classifier, CSP_transform in zip(self.classifiers, self.CSP_transforms):   
 
-                X_test_ = apply_CSP(CSP_transform, X_test)
-                X_test_ = np.mean(X_test_, axis=-1)
-
-                #X_test_ = utils.windowed_means(X_test_, self.num_samples)
-                #X_test_ = utils.flatten_dim12(X_test_)
-
+                X_test_ = CSP_extract_features(X_test, CSP_transform, self.n_top)
                 predictions = classifier.predict(X_test_) 
                 
                 for i, prediction in enumerate(predictions):
@@ -298,12 +289,7 @@ class CSP_LDA_classifier:
             
             for classifier, CSP_transform in zip(self.classifiers, self.CSP_transforms):   
                 
-                X_train_ = apply_CSP(CSP_transform, self.X_train)
-                X_train_ = np.mean(X_train_, axis=-1)
-
-                #X_train_ = utils.windowed_means(X_train_, self.num_samples)
-                #X_train_ = utils.flatten_dim12(X_train_)
-                
+                X_train_ = CSP_extract_features(self.X_train, CSP_transform, self.n_top)
                 predictions = classifier.predict(X_train_) 
 
                 for i, prediction in enumerate(predictions):

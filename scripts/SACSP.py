@@ -1,6 +1,7 @@
 import sys
 import numpy as np
 import scipy as sp
+import matplotlib.pyplot as plt
 from sklearn.utils import shuffle
 from sklearn.model_selection import cross_val_score
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -204,6 +205,7 @@ def SACSP2_update_spatial_filters(data, h_or_l, avg_cov_sum, top_n):
     ## Extract top n eigen vectors
     sort_indices = np.argsort(eigval)
     top_n_indices = list(sort_indices[-top_n:])
+    #top_n_indices = list(sort_indices[:top_n])
     top_n_eigvec = eigvec[:, top_n_indices]
     
     return top_n_eigvec
@@ -233,15 +235,47 @@ def SACSP2_update_spectral_filters(data, w_or_v):
     return h
 
 
-def SACSP2(c1_data, c2_data, R=3, M=1, e=1e-6):
+def SACSP2(c1_data, c2_data, R=3, M=3, e=1e-6, sampling_f=250):
     
     ## R = number of spectral/spatial filters for each class
     ## M = number of initializations of spectral filters
     
     t = c1_data.shape[-1]  ## Number of time samples
     
-    H = np.ones((M, t))  ## Initialize M number of h vectors
-    L = np.ones((M, t))  ## Initialize M number of l vectors
+    H = np.zeros((M, t))  ## Initialize M number of h vectors
+    L = np.zeros((M, t))  ## Initialize M number of l vectors
+    freq = np.fft.fftfreq(t) * sampling_f
+
+    ## 1st set of spectral filter initialization: all ones
+    H[0, :] = np.ones(t)
+    L[0, :] = np.ones(t)
+
+    if M > 1:
+        ## 2nd set of spectral filter initialization: ones only in 7-15 Hz band
+        h2 = np.zeros(t)
+        h2[np.all([freq >= 7, freq <= 15], axis=0)] = 1
+        h2[np.all([freq <= -7, freq >= -15], axis=0)] = 1
+    
+        l2 = np.zeros(t)
+        l2[np.all([freq >= 7, freq <= 15], axis=0)] = 1
+        l2[np.all([freq <= -7, freq >= -15], axis=0)] = 1
+    
+        H[1, :] = h2
+        L[1, :] = l2
+
+    if M > 2:
+        ## 3rd set of spectral filter initialization: ones only in 15-30 Hz band
+        h3 = np.zeros(t)
+        h3[np.all([freq >= 15, freq <= 30], axis=0)] = 1
+        h3[np.all([freq <= -15, freq >= -30], axis=0)] = 1
+    
+        l3 = np.zeros(t)
+        l3[np.all([freq >= 15, freq <= 30], axis=0)] = 1
+        l3[np.all([freq <= -15, freq >= -30], axis=0)] = 1
+    
+        H[2, :] = h3
+        L[2, :] = l3
+
 
     num_c1_trials = c1_data.shape[0]
     num_c2_trials = c2_data.shape[0]
@@ -270,6 +304,9 @@ def SACSP2(c1_data, c2_data, R=3, M=1, e=1e-6):
     
     c1_filter_pairs = []
     c2_filter_pairs = []
+
+    c1_costs = []
+    c2_costs = []
     
     for m in range(M):
         
@@ -307,6 +344,7 @@ def SACSP2(c1_data, c2_data, R=3, M=1, e=1e-6):
                 c1_cost_increase = c1_cost - c1_cost_prev
    
             c1_filter_pairs.append([h, w])
+            c1_costs.append(c1_cost)
             
             
             ### Class 2 optimization ###
@@ -333,12 +371,21 @@ def SACSP2(c1_data, c2_data, R=3, M=1, e=1e-6):
                 c2_cost_increase = c2_cost - c2_cost_prev
 
             c2_filter_pairs.append([l, v])
-    
-    ## From the M x R pairs of spatial and spectral filters, select R pairs that maximize the cost function
+            c2_costs.append(c2_cost)
 
-    ## Not implemented since choosing M = 1
+
+    ## From the M x R pairs of spatial and spectral filters, select R pairs (for each class) that maximize the cost function
+    c1_costs_sort_indices = np.argsort(c1_costs)
+    #c1_top_R_indices = list(c1_costs_sort_indices[-R:])
+    c1_top_R_indices = list(c1_costs_sort_indices[:R])
+    best_c1_filter_pairs = [c1_filter_pairs[i] for i in c1_top_R_indices]
+
+    c2_costs_sort_indices = np.argsort(c2_costs)
+    #c2_top_R_indices = list(c2_costs_sort_indices[-R:])
+    c2_top_R_indices = list(c2_costs_sort_indices[:R])
+    best_c2_filter_pairs = [c2_filter_pairs[i] for i in c2_top_R_indices]
     
-    return c1_filter_pairs, c2_filter_pairs
+    return best_c1_filter_pairs, best_c2_filter_pairs
 
 
 def SACSP2_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
@@ -349,7 +396,7 @@ def SACSP2_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
     extracted_features = np.zeros((all_data.shape[0], 2 * R))
     
     for i, epoch in enumerate(all_data):    
-        epoch_fourier = epoch @ F
+        epoch_fourier = np.fft.fft(epoch)
         
         for j, filter_pair in enumerate(c1_filter_pairs + c2_filter_pairs):
             spectral_filter = filter_pair[0]  
@@ -367,10 +414,12 @@ def SACSP2_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
 
 class SACSP_LDA_classifier:
     
-    def __init__(self, X_train, y_train, cross_val=None):
+    def __init__(self, X_train, y_train, cross_val=None, n_top=3, random_state=42):
         self.X_train = X_train
         self.y_train = y_train
         self.cross_val = cross_val
+        self.n_top = n_top
+        self.random_state = random_state
 
     def train_binary(self):
         
@@ -387,7 +436,7 @@ class SACSP_LDA_classifier:
         labels_c2 = self.y_train[self.y_train == unique_labels[1]]
             
         ## Apply SACSP to transform data
-        self.c1_filter_pairs, self.c2_filter_pairs = SACSP2(data_c1, data_c2)
+        self.c1_filter_pairs, self.c2_filter_pairs = SACSP2(data_c1, data_c2, M=self.n_top)
         extracted_features = SACSP2_extract_features(self.X_train, self.c1_filter_pairs, self.c2_filter_pairs)
         
         self.classifier = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
@@ -446,7 +495,7 @@ class SACSP_LDA_classifier:
                 labels_c2 = self.y_train[self.y_train == unique_labels[j]]
 
                 ## Apply SACSP to transform data
-                c1_filter_pairs, c2_filter_pairs = SACSP2(data_c1, data_c2)
+                c1_filter_pairs, c2_filter_pairs = SACSP2(data_c1, data_c2, M=self.n_top)
                 self.SACSP_filter_pairs.append([c1_filter_pairs, c2_filter_pairs])
                 data_c1 = SACSP2_extract_features(data_c1, c1_filter_pairs, c2_filter_pairs)
                 data_c2 = SACSP2_extract_features(data_c2, c1_filter_pairs, c2_filter_pairs)
@@ -456,7 +505,7 @@ class SACSP_LDA_classifier:
                 labels_concat = np.concatenate((labels_c1, labels_c2), axis=0)
                         
                 ## Shuffle data
-                data_concat, labels_concat = shuffle(data_concat, labels_concat, random_state=42)
+                data_concat, labels_concat = shuffle(data_concat, labels_concat, random_state=self.random_state)
 
                 lda = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
                 lda.fit(data_concat, labels_concat)
