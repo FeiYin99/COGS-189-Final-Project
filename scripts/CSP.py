@@ -125,7 +125,6 @@ def apply_CSP(W, data):
     return data_transformed
 
 
-
 class CSP_LDA_classifier:
     
     def __init__(self, X_train, y_train, cross_val=None, num_samples=10):
@@ -155,10 +154,14 @@ class CSP_LDA_classifier:
         data_transformed = apply_CSP(self.CSP_transform, self.X_train)
 
         ## Downsample with windowed means
-        data_transformed = utils.windowed_means(data_transformed, self.num_samples)
+        #data_transformed = utils.windowed_means(data_transformed, self.num_samples)
         
         ## Flatten data
-        data_transformed = utils.flatten_dim12(data_transformed)
+        #data_transformed = utils.flatten_dim12(data_transformed)
+
+        data_transformed = np.mean(data_transformed, axis=-1)
+
+
         
         self.classifier = LinearDiscriminantAnalysis(solver='lsqr',  shrinkage='auto')
         self.classifier.fit(data_transformed, self.y_train)
@@ -178,8 +181,11 @@ class CSP_LDA_classifier:
         if X_test is not None and y_test is not None:
 
             X_test_ = apply_CSP(self.CSP_transform, X_test)
-            X_test_ = utils.windowed_means(X_test_, self.num_samples)
-            X_test_ = utils.flatten_dim12(X_test_)
+
+            X_test_ = np.mean(X_test_, axis=-1)
+
+            #X_test_ = utils.windowed_means(X_test_, self.num_samples)
+            #X_test_ = utils.flatten_dim12(X_test_)
 
             predictions = self.classifier.predict(X_test_)
             accuracy = accuracy_score(y_test, predictions)
@@ -190,8 +196,11 @@ class CSP_LDA_classifier:
         else:
 
             X_train_ = apply_CSP(self.CSP_transform, self.X_train)
-            X_train_ = utils.windowed_means(X_train_, self.num_samples)
-            X_train_ = utils.flatten_dim12(X_train_)
+
+            X_train_ = np.mean(X_train_, axis=-1)
+
+            #X_train_ = utils.windowed_means(X_train_, self.num_samples)
+            #X_train_ = utils.flatten_dim12(X_train_)
 
             predictions = self.classifier.predict(X_train_)
             accuracy = accuracy_score(self.y_train, predictions)
@@ -222,7 +231,7 @@ class CSP_LDA_classifier:
                 labels_c2 = self.y_train[self.y_train == unique_labels[j]]
 
                 ## Apply CSP to transform data
-                CSP_transform = CSP(data_c1, data_c2)
+                CSP_transform = CSP2(data_c1, data_c2)
                 self.CSP_transforms.append(CSP_transform)
                 data_c1 = apply_CSP(CSP_transform, data_c1)
                 data_c2 = apply_CSP(CSP_transform, data_c2)
@@ -230,12 +239,14 @@ class CSP_LDA_classifier:
                 ## Concatenate data and labels
                 data_concat = np.concatenate((data_c1, data_c2), axis=0)
                 labels_concat = np.concatenate((labels_c1, labels_c2), axis=0)
+
+                data_concat = np.mean(data_concat, axis=-1)
         
                 ## Downsample with windowed means
-                data_concat = utils.windowed_means(data_concat, self.num_samples)
+                #data_concat = utils.windowed_means(data_concat, self.num_samples)
                 
                 ## Flatten data
-                data_concat = utils.flatten_dim12(data_concat)
+                #data_concat = utils.flatten_dim12(data_concat)
                 
                 ## Shuffle data
                 data_concat, labels_concat = shuffle(data_concat, labels_concat, random_state=42)
@@ -266,8 +277,10 @@ class CSP_LDA_classifier:
             for classifier, CSP_transform in zip(self.classifiers, self.CSP_transforms):   
 
                 X_test_ = apply_CSP(CSP_transform, X_test)
-                X_test_ = utils.windowed_means(X_test_, self.num_samples)
-                X_test_ = utils.flatten_dim12(X_test_)
+                X_test_ = np.mean(X_test_, axis=-1)
+
+                #X_test_ = utils.windowed_means(X_test_, self.num_samples)
+                #X_test_ = utils.flatten_dim12(X_test_)
 
                 predictions = classifier.predict(X_test_) 
                 
@@ -286,8 +299,10 @@ class CSP_LDA_classifier:
             for classifier, CSP_transform in zip(self.classifiers, self.CSP_transforms):   
                 
                 X_train_ = apply_CSP(CSP_transform, self.X_train)
-                X_train_ = utils.windowed_means(X_train_, self.num_samples)
-                X_train_ = utils.flatten_dim12(X_train_)
+                X_train_ = np.mean(X_train_, axis=-1)
+
+                #X_train_ = utils.windowed_means(X_train_, self.num_samples)
+                #X_train_ = utils.flatten_dim12(X_train_)
                 
                 predictions = classifier.predict(X_train_) 
 
