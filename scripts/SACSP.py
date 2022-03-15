@@ -12,164 +12,14 @@ import classification_utils as utils
 
 
 
-def SACSP_cost_function(data_fourier, h_or_l, w_or_v, avg_cov_sum):
-    ## Equation 4 and 5 in paper
-    
-    numerator = (w_or_v.T @ data_fourier @ np.diag(h_or_l) @ np.matrix(data_fourier).H @ w_or_v)[0, 0]
-    denominator = (w_or_v.T @ avg_cov_sum @ w_or_v)[0, 0]
-    
-    return numerator / denominator
-
-
-def SACSP_update_spatial_filters(data_fourier, h_or_l, avg_cov_sum, top_n):
-	## Equation 6 and 7 in paper
-
-    E = data_fourier @ np.diag(h_or_l) @ np.matrix(data_fourier).H
-    
-    ## Generalized eigen-decomposition of Eq6 and Eq7 along with sum of class' spatial covariances
-    eigval, eigvec = sp.linalg.eigh(E, avg_cov_sum)
-    
-    ## Extract top n eigen vectors
-    sort_indices = np.argsort(eigval)
-    top_n_indices = list(sort_indices[-top_n:])
-    top_n_eigvec = eigvec[:, top_n_indices]
-    
-    return top_n_eigvec
-
-
-def SACSP(c1_data, c2_data, R=3, M=1, e=1e-6):
-    
-    ## R = number of spectral/spatial filters for each class
-    ## M = number of initializations of spectral filters
-    
-    t = c1_data.shape[-1]  ## Number of time samples
-    #F = sp.linalg.dft(t)  ## Fourier matrix with shape t x t
-    
-    H = np.ones((M, t))  ## Initialize M number of h vectors
-    L = np.ones((M, t))  ## Initialize M number of l vectors
- 
-    c1_data_avg = np.mean(c1_data, axis=0)
-    c2_data_avg = np.mean(c2_data, axis=0)
-
-    c1_data_avg_cov = np.cov(c1_data_avg)
-    c2_data_avg_cov = np.cov(c2_data_avg)
-    avg_cov_sum = c1_data_avg_cov + c2_data_avg_cov
-    
-    c1_data_avg_fourier = np.fft.fft(c1_data_avg)
-    c2_data_avg_fourier = np.fft.fft(c2_data_avg)
-    
-    c1_filter_pairs = []
-    c2_filter_pairs = []
-    
-    for m in range(M):
-        
-        ## h and l are spectral filters
-        h = H[m, :]
-        l = L[m, :]
-        
-        ## w and v are spatial filters
-        W = SACSP_update_spatial_filters(c1_data_avg_fourier, h, avg_cov_sum, top_n=R)
-        V = SACSP_update_spatial_filters(c2_data_avg_fourier, l, avg_cov_sum, top_n=R)
-        
-        for r in range(R):  
-            
-            ### Class 1 optimization ###
-            
-            w = np.atleast_2d(W[:, r]).T  ## From W, get w as a column vector
-            
-            c1_cost = 0
-            c1_cost_increase = e + 1
-            
-            while c1_cost_increase > e:
-            
-                ## Update spectral filter h_r_m from Eq9    
-                E = np.matrix(c1_data_avg_fourier).H @ w @ w.T @ c1_data_avg_fourier
-                
-                for k in range(t):
-                    h[k] = E[k, k] / np.linalg.norm(np.diag(E))
-                
-                H[m, :] = h
-                
-                ## Update spatial filter w_r by selecting the eigenvector 
-                ##   corresponding to the largest eigenvalue from Eq6
-                w = SACSP_update_spatial_filters(c1_data_avg_fourier, h, avg_cov_sum, top_n=1)
-                W[:, r] = w.flatten()
-
-                ## Calculate cost
-                c1_cost_prev = c1_cost
-                c1_cost = SACSP_cost_function(c1_data_avg_fourier, h, w, avg_cov_sum)
-                c1_cost_increase = c1_cost - c1_cost_prev
-   
-            c1_filter_pairs.append([h, w])
-            
-            
-            ### Class 2 optimization ###
-            
-            v = np.atleast_2d(V[:, r]).T  ## From V, get v as a column vector
-            
-            c2_cost = 0
-            c2_cost_increase = e + 1
-            
-            while c2_cost_increase > e:
-            
-                ## Update spectral filter l_r_m from Eq10    
-                E = np.matrix(c2_data_avg_fourier).H @ v @ v.T @ c2_data_avg_fourier
-                
-                for k in range(t):
-                    l[k] = E[k, k] / np.linalg.norm(np.diag(E))
-                
-                L[m, :] = l
-                
-                ## Update spatial filter v_r by selecting the eigenvector 
-                ##   corresponding to the largest eigenvalue from Eq7
-                v = SACSP_update_spatial_filters(c2_data_avg_fourier, l, avg_cov_sum, top_n=1)
-                V[:, r] = v.flatten()
-
-                ## Calculate cost
-                c2_cost_prev = c2_cost
-                c2_cost = SACSP_cost_function(c2_data_avg_fourier, l, v, avg_cov_sum)
-                c2_cost_increase = c2_cost - c2_cost_prev
-
-            c2_filter_pairs.append([l, v])
-    
-    ## From the M x R pairs of spatial and spectral filters, select R pairs that maximize the cost function
-
-    ## Not implemented since choosing M = 1
-    
-    return c1_filter_pairs, c2_filter_pairs
-
-
-def SACSP_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
-    
-    t = all_data.shape[-1]  ## Number of time samples
-    F = sp.linalg.dft(t)  ## Fourier matrix with shape t x t
-    
-    extracted_features = np.zeros((all_data.shape[0], 2 * R))
-    
-    for i, epoch in enumerate(all_data):    
-        epoch_fourier = epoch @ F
-        
-        for j, filter_pair in enumerate(c1_filter_pairs + c2_filter_pairs):
-            spectral_filter = filter_pair[0]  
-            spatial_filter = filter_pair[1]
-            extracted_feature = np.log(spatial_filter.T @ 
-                                       epoch_fourier @ 
-                                       np.diag(spectral_filter) @ 
-                                       np.matrix(epoch_fourier).H @ 
-                                       spatial_filter)
-            
-            extracted_features[i, j] = extracted_feature[0, 0]
-            
-    return extracted_features
-
-
 def SACSP2_cost_function(data, h_or_l, w_or_v, avg_cov_sum):
     ## Equation 4 and 5 in paper
 
     num_trials = data.shape[0]
     num_channels = data.shape[1]
 
-    E = np.zeros((num_trials, num_channels, num_channels))
+    #E = np.zeros((num_trials, num_channels, num_channels))
+    E = np.zeros((num_trials, num_channels, num_channels), dtype=np.complex_)
 
     for i in range(num_trials):
         trial = data[i]
@@ -190,7 +40,8 @@ def SACSP2_update_spatial_filters(data, h_or_l, avg_cov_sum, top_n):
     num_trials = data.shape[0]
     num_channels = data.shape[1]
 
-    E = np.zeros((num_trials, num_channels, num_channels))
+    #E = np.zeros((num_trials, num_channels, num_channels))
+    E = np.zeros((num_trials, num_channels, num_channels), dtype=np.complex_)
 
     for i in range(num_trials):
         trial = data[i]
@@ -217,7 +68,8 @@ def SACSP2_update_spectral_filters(data, w_or_v):
     num_trials = data.shape[0]
     num_samples = data.shape[-1]
 
-    E = np.zeros((num_trials, num_samples, num_samples))
+    #E = np.zeros((num_trials, num_samples, num_samples))
+    E = np.zeros((num_trials, num_samples, num_samples), dtype=np.complex_)
 
     for i in range(num_trials):
         trial = data[i]
@@ -227,28 +79,29 @@ def SACSP2_update_spectral_filters(data, w_or_v):
     E_avg = np.mean(E, axis=0)
     E_avg_diag_norm = np.linalg.norm(np.diag(E_avg))
 
-    h = np.zeros(num_samples)
+    #h_or_l = np.zeros(num_samples)
+    h_or_l = np.zeros(num_samples, dtype=np.complex_)
 
     for k in range(num_samples):
-        h[k] = E_avg[k, k] / E_avg_diag_norm
+        h_or_l[k] = E_avg[k, k] / E_avg_diag_norm
 
-    return h
+    return h_or_l
 
 
-def SACSP2(c1_data, c2_data, R=3, M=3, e=1e-6, sampling_f=250):
+def SACSP2(c1_data, c2_data, R=3, M=3, e=1e-4, sampling_f=250):
     
     ## R = number of spectral/spatial filters for each class
     ## M = number of initializations of spectral filters
     
     t = c1_data.shape[-1]  ## Number of time samples
     
-    H = np.zeros((M, t))  ## Initialize M number of h vectors
-    L = np.zeros((M, t))  ## Initialize M number of l vectors
+    H = np.zeros((M, t), dtype=np.complex_)  ## Initialize M number of h vectors
+    L = np.zeros((M, t), dtype=np.complex_)  ## Initialize M number of l vectors
     freq = np.fft.fftfreq(t) * sampling_f
 
     ## 1st set of spectral filter initialization: all ones
-    H[0, :] = np.ones(t)
-    L[0, :] = np.ones(t)
+    H[0, :] = np.ones(t) / np.linalg.norm(np.ones(t))
+    L[0, :] = np.ones(t) / np.linalg.norm(np.ones(t))
 
     if M > 1:
         ## 2nd set of spectral filter initialization: ones only in 7-15 Hz band
@@ -260,8 +113,8 @@ def SACSP2(c1_data, c2_data, R=3, M=3, e=1e-6, sampling_f=250):
         l2[np.all([freq >= 7, freq <= 15], axis=0)] = 1
         l2[np.all([freq <= -7, freq >= -15], axis=0)] = 1
     
-        H[1, :] = h2
-        L[1, :] = l2
+        H[1, :] = h2 / np.linalg.norm(h2)
+        L[1, :] = l2 / np.linalg.norm(l2)
 
     if M > 2:
         ## 3rd set of spectral filter initialization: ones only in 15-30 Hz band
@@ -273,8 +126,8 @@ def SACSP2(c1_data, c2_data, R=3, M=3, e=1e-6, sampling_f=250):
         l3[np.all([freq >= 15, freq <= 30], axis=0)] = 1
         l3[np.all([freq <= -15, freq >= -30], axis=0)] = 1
     
-        H[2, :] = h3
-        L[2, :] = l3
+        H[2, :] = h3 / np.linalg.norm(h3)
+        L[2, :] = l3 / np.linalg.norm(l3)
 
 
     num_c1_trials = c1_data.shape[0]
@@ -401,13 +254,13 @@ def SACSP2_extract_features(all_data, c1_filter_pairs, c2_filter_pairs, R=3):
         for j, filter_pair in enumerate(c1_filter_pairs + c2_filter_pairs):
             spectral_filter = filter_pair[0]  
             spatial_filter = filter_pair[1]
-            extracted_feature = np.log(spatial_filter.T @ 
-                                       epoch_fourier @ 
-                                       np.diag(spectral_filter) @ 
-                                       np.matrix(epoch_fourier).H @ 
-                                       spatial_filter)
+            extracted_feature = np.log10(spatial_filter.T @ 
+                                         epoch_fourier @ 
+                                         np.diag(spectral_filter) @ 
+                                         np.matrix(epoch_fourier).H @ 
+                                         spatial_filter)
             
-            extracted_features[i, j] = extracted_feature[0, 0]
+            extracted_features[i, j] = np.real(extracted_feature[0, 0])
             
     return extracted_features
 
